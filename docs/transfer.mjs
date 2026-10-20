@@ -6,7 +6,7 @@ const transferFrom64=value=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
 export function validateEncryptedRoster(value){
   if(!value||value.format!==ROSTER_FORMAT||value.kdf!=='PBKDF2-SHA256'||value.iterations!==600000||value.cipher!=='AES-256-GCM'||
     !['salt','iv','ciphertext'].every(k=>typeof value[k]==='string'&&value[k].length%4===0&&/^[A-Za-z0-9+/]*={0,2}$/.test(value[k]))||value.ciphertext.length>14000000)
-    throw new Error('対応する暗号化名簿ではありません。スプレッドシートの「受付名簿を暗号化して書き出す」で保存したJSONを選んでください。バックアップはロック画面から復元します。');
+    throw new Error('対応する暗号化名簿ではありません。スプレッドシートの「受付名簿を暗号化して書き出す」で保存したJSONを選んでください。バックアップは「暗号化バックアップから復元」で選びます。');
   try{
     const size=transferFrom64(value.ciphertext).length;
     if(transferFrom64(value.salt).length!==16||transferFrom64(value.iv).length!==12||size<16||size>MAX_CSV_BYTES+16)throw new Error();

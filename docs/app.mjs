@@ -1,10 +1,10 @@
 import {EVENT_NAME, rosterFromCSV, mergeRoster, retainReviews, selectGroup, deriveKey, seal, unseal, validateVault, toCSV} from './core.mjs';
 import {validateEncryptedRoster,decryptRosterCSV} from './transfer.mjs';
+import {DEVICE_FORMAT,createDeviceKey,sealDeviceState,openDeviceState} from './device.mjs';
 
 const $ = id => document.getElementById(id);
-let db, vault = null, state = null, key = null, salt = null, busy = false, session = 0;
+let db, vault = null, state = null, deviceKey = null, busy = false, session = 0, secretMode = null, secretRequest = 0;
 let currentGroupId = null, pendingRestore = null, pendingRoster = null, stream = null, scanFrame = null, scanning = false;
-let lastActivity = Date.now(), hiddenAt = null, failedAttempts = 0, retryAfter = 0;
 let flaggedGroups = new Set();
 const blankState = () => ({version:1,eventName:EVENT_NAME,people:[],importedAt:null,reviews:{}});
 const needsReview = groupId => flaggedGroups.has(groupId);
@@ -14,6 +14,7 @@ function notify(message, type = '') {
   $('notice').textContent = message; $('notice').className = 'notice ' + type; $('notice').hidden = false;
   if($('group-dialog').open){$('dialog-notice').textContent=message;$('dialog-notice').className='notice '+type;$('dialog-notice').hidden=false;}
   if($('import-dialog').open){$('import-error').textContent=message;$('import-error').hidden=false;}
+  if($('backup-dialog').open){$('backup-error').textContent=message;$('backup-error').hidden=false;}
 }
 function report(error) { notify(error?.message || '処理に失敗しました。もう一度お試しください。','error'); }
 function openDB() {
@@ -30,60 +31,70 @@ function readVault() {
     req.onsuccess = () => resolve(req.result || null); req.onerror = () => reject(req.error);
   });
 }
-function writeVault(next, expected) {
+function matchesVault(current,expected){return expected ? !!current&&current.revision===expected.revision&&current.format===expected.format&&current.ciphertext===expected.ciphertext : !current;}
+function readDeviceKey(){return new Promise((resolve,reject)=>{const request=db.transaction('vault','readonly').objectStore('vault').get('device-key');request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});}
+function writeVault(next, expected, replacementKey, accept=()=>true) {
   return new Promise((resolve,reject) => {
     const tx = db.transaction('vault','readwrite'), store = tx.objectStore('vault');
-    let conflict = false;
+    let conflict = false, cancelled = false;
     const request = store.get('current');
     request.onsuccess = () => {
-      if ((request.result?.revision ?? null) !== expected) { conflict = true; tx.abort(); return; }
-      try{if (next) store.put(next,'current'); else store.delete('current');}catch{tx.abort();}
+      if(!accept()){cancelled=true;tx.abort();return;}
+      if (!matchesVault(request.result,expected)) { conflict = true; tx.abort(); return; }
+      try{
+        if(next){store.put(next,'current');if(replacementKey)store.put(replacementKey,'device-key');}
+        else{store.delete('current');store.delete('device-key');}
+      }catch{tx.abort();}
     };
     tx.oncomplete = resolve;
-    tx.onabort = tx.onerror = () => reject(new Error(conflict ? '別の画面で名簿が更新されました。この画面をロックして開き直してください。' : '保存できませんでした。受付は確定していません。端末の空き容量を確認してください。'));
+    tx.onabort = tx.onerror = () => reject(new Error(cancelled ? '操作を取り消しました。記録は変更していません。' : conflict ? '別の画面で名簿が更新されました。この画面を再読み込みしてください。' : '保存できませんでした。受付は確定していません。端末の空き容量を確認してください。'));
   });
 }
 async function run(task) {
   if (busy) return;
   busy = true; document.querySelectorAll('button[type="submit"]').forEach(b=>b.disabled=true);
   try { await task(); } catch(e) { report(e); }
-  finally { busy = false; document.querySelectorAll('button[type="submit"]').forEach(b=>b.disabled=false);if($('group-dialog').open)updateSelection();lastActivity=Date.now(); }
+  finally { busy = false; document.querySelectorAll('button[type="submit"]').forEach(b=>b.disabled=false);if($('group-dialog').open)updateSelection(); }
 }
 async function commit(next) {
-  if (!key || !state) throw new Error('ロックを解除してください。');
-  const generation=session, nextVault=await seal(next,key,salt,vault.revision+1);
-  await writeVault(nextVault,vault.revision);
+  if (!deviceKey || !state) throw new Error('受付データを開き直してください。');
+  const generation=session, nextVault=await sealDeviceState(next,deviceKey,vault.revision+1);
+  await writeVault(nextVault,vault);
   if (generation !== session) return false;
   vault=nextVault; state=next; render(); return true;
 }
-function gate() {
-  $('gate').hidden=false; $('workspace').hidden=true; $('navigation').hidden=true; $('lock').hidden=true;
-  const creating=!vault && !pendingRestore;
-  $('gate-title').textContent=pendingRestore ? 'バックアップを開く' : creating ? '受付データを保護する' : 'ロックを解除';
-  $('gate-help').textContent=pendingRestore ? 'バックアップ保存時のパスフレーズを入力してください。' : creating ? '12文字以上のパスフレーズを設定します。推測されにくい複数の言葉を使い、大切に保管してください。' : 'この端末に保存したデータを復号します。';
-  $('confirm-wrap').hidden=!creating;
-  $('passphrase-confirm').required=creating;
-  $('passphrase').autocomplete=creating ? 'new-password' : 'current-password';
-  $('unlock').textContent=pendingRestore ? '復元して開く' : creating ? '設定して始める' : 'ロックを解除';
-  $('unlock').disabled=false;
-}
-function lock(showMessage=true) {
+function clearSession() {
   session++; stopCamera();
   if ($('group-dialog').open) $('group-dialog').close();
   if ($('import-dialog').open) $('import-dialog').close();
   pendingRoster=null;$('import-passphrase').value='';$('import-error').textContent='';
-  state=null;key=null;salt=null;currentGroupId=null;flaggedGroups=new Set();
+  state=null;deviceKey=null;currentGroupId=null;flaggedGroups=new Set();
   $('people-list').replaceChildren();$('group-members').replaceChildren();$('manual-id').value='';$('search').value='';
   $('group-title').textContent='来場した方を選択';$('group-status').textContent='';
   $('group-warning').textContent='';$('review-note').value='';$('review-status').textContent='';
   $('dialog-notice').textContent='';$('dialog-notice').hidden=true;
-  $('passphrase').value='';$('passphrase-confirm').value='';
-  $('notice').hidden=true; gate();
-  if (showMessage) notify('ロックしました。受付記録は暗号化して保存されています。');
+  $('notice').hidden=true;$('gate').hidden=false;$('workspace').hidden=true;$('navigation').hidden=true;
 }
 function showWorkspace() {
-  $('gate').hidden=true; $('workspace').hidden=false; $('navigation').hidden=false; $('lock').hidden=false;
-  $('passphrase').value=''; $('passphrase-confirm').value=''; $('notice').hidden=true;lastActivity=Date.now();render();
+  $('gate').hidden=true; $('workspace').hidden=false; $('navigation').hidden=false;
+  $('notice').hidden=true;render();
+}
+async function replaceLocalState(next,expected,accept=()=>true){
+  const revision=Number.isSafeInteger(expected?.revision)&&expected.revision>0&&expected.revision<Number.MAX_SAFE_INTEGER?expected.revision+1:1;
+  const replacementKey=await createDeviceKey(),replacement=await sealDeviceState(next,replacementKey,revision);
+  if(!accept())return false;
+  await writeVault(replacement,expected,replacementKey,accept);
+  clearSession();vault=replacement;deviceKey=replacementKey;state=next;showWorkspace();return true;
+}
+async function openLocalState(){
+  const stored=await readVault();
+  if(!stored){await replaceLocalState(blankState(),null);return;}
+  vault=stored;
+  if(stored.format!==DEVICE_FORMAT){
+    validateVault(stored);$('gate-title').textContent='以前の記録を引き継ぐ';$('gate-help').textContent='旧版の記録が残っています。以前のアプリ用パスフレーズを一度だけ入力すると、次回から入力なしで開けます。';$('migrate').hidden=false;return;
+  }
+  const record=await readDeviceKey(),opened=await openDeviceState(stored,record);
+  deviceKey=record;state=opened;showWorkspace();
 }
 function render() {
   if (!state) return;
@@ -188,7 +199,7 @@ async function startCamera() {
       const v=$('video'),scale=Math.min(1,720/v.videoWidth);canvas.width=Math.round(v.videoWidth*scale);canvas.height=Math.round(v.videoHeight*scale);
       ctx.drawImage(v,0,0,canvas.width,canvas.height);const data=ctx.getImageData(0,0,canvas.width,canvas.height);
       const code=window.jsQR(data.data,data.width,data.height,{inversionAttempts:'attemptBoth'});
-      if(code){stopCamera();lastActivity=Date.now();showGroup(code.data);}
+      if(code){stopCamera();showGroup(code.data);}
     };scanFrame=requestAnimationFrame(tick);
   } catch(e){stopCamera();notify(e.name==='NotAllowedError'?'カメラが許可されていません。SafariのWebサイト設定で許可するか、名簿から名前で受付してください。':'カメラを起動できません。ほかのカメラアプリを閉じて、再度お試しください。','error');}
   finally{$('start-camera').disabled=!state?.people.length;}
@@ -211,35 +222,43 @@ async function checkOffline() {
   } catch {$('offline-state').textContent='オフライン準備未完了';$('cache-detail').textContent='オンラインでホーム画面のアイコンから開き直してください。ファイルを直接開く方法ではオフライン用保存ができません。';}
 }
 
-$('unlock-form').addEventListener('submit',e=>{e.preventDefault();run(async()=>{
-  if(Date.now()<retryAfter)throw new Error('入力を繰り返したため、30秒待ってから試してください。');
-  const pass=$('passphrase').value;
-  try {
-    if(pendingRestore){
-      const opened=await unseal(pendingRestore,pass);
-      const current=await readVault();
-      if(current&&!confirm('この端末の名簿と記録を、選んだバックアップで置き換えますか？ 未保存の記録は失われます。'))return;
-      const replacement={...pendingRestore,revision:(current?.revision||0)+1};await writeVault(replacement,current?.revision??null);
-      vault=replacement;({state,key,salt}=opened);pendingRestore=null;
-    } else {
-      vault=await readVault();
-      if(vault){({state,key,salt}=await unseal(vault,pass));}
-      else{
-        if(pass.length<12)throw new Error('パスフレーズは12文字以上にしてください。');
-        if(pass!==$('passphrase-confirm').value)throw new Error('2回のパスフレーズが一致しません。');
-        const newSalt=crypto.getRandomValues(new Uint8Array(16)),newKey=await deriveKey(pass,newSalt),empty=blankState();
-        const encrypted=await seal(empty,newKey,newSalt,1);await writeVault(encrypted,null);
-        salt=newSalt;key=newKey;state=empty;vault=encrypted;
-      }
-    }
-    failedAttempts=0;session++;showWorkspace();
-    if(navigator.storage?.persist)navigator.storage.persist().catch(()=>{});
-  }catch(error){
-    key=null;salt=null;state=null;failedAttempts++;if(failedAttempts>=5){retryAfter=Date.now()+30000;failedAttempts=0;}
-    throw error;
-  }finally{$('passphrase').value='';$('passphrase-confirm').value='';}
+function openSecret(mode){
+  secretRequest++;secretMode=mode;const saving=mode==='save',migrating=mode==='migrate';
+  $('backup-title').textContent=saving?'バックアップを暗号化する':migrating?'以前の記録を引き継ぐ':'バックアップを復元する';
+  $('backup-help').textContent=saving?'バックアップのファイルを保護するパスフレーズを設定してください。アプリ起動時の入力は不要です。':migrating?'旧版で設定したアプリ用パスフレーズを一度だけ入力してください。':'このバックアップを保存したときのパスフレーズを入力してください。';
+  $('backup-confirm-wrap').hidden=!saving;$('backup-confirm').required=saving;
+  $('backup-passphrase').autocomplete=saving?'new-password':'off';
+  document.querySelector('label[for="backup-passphrase"]').textContent=migrating?'以前のアプリ用パスフレーズ':'バックアップ用パスフレーズ';
+  $('backup-submit').textContent=saving?'暗号化して保存':migrating?'引き継いで開く':'復元する';
+  $('backup-passphrase').value='';$('backup-confirm').value='';$('backup-error').hidden=true;$('backup-dialog').showModal();
+}
+$('backup-cancel').addEventListener('click',()=>$('backup-dialog').close());
+$('backup-dialog').addEventListener('close',()=>{secretRequest++;secretMode=null;pendingRestore=null;$('backup-passphrase').value='';$('backup-confirm').value='';$('backup-error').textContent='';});
+$('migrate').addEventListener('click',()=>openSecret('migrate'));
+$('reload').addEventListener('click',()=>location.reload());
+$('backup-form').addEventListener('submit',e=>{e.preventDefault();run(async()=>{
+  const mode=secretMode,request=secretRequest,pass=$('backup-passphrase').value,confirmation=$('backup-confirm').value,restore=pendingRestore,expected=vault;
+  const accept=()=>request===secretRequest&&$('backup-dialog').open;
+  $('backup-passphrase').value='';$('backup-confirm').value='';
+  if(mode==='save'){
+    if(!state)throw new Error('受付データを開き直してください。');
+    if(pass.length<12)throw new Error('バックアップ用パスフレーズは12文字以上にしてください。');
+    if(pass!==confirmation)throw new Error('2回のパスフレーズが一致しません。');
+    if(!matchesVault(await readVault(),expected))throw new Error('別の画面で更新されました。再読み込みしてから保存してください。');
+    const salt=crypto.getRandomValues(new Uint8Array(16)),key=await deriveKey(pass,salt),backup=await seal(state,key,salt,1);
+    if(!accept())return;
+    await saveFile(JSON.stringify(backup,null,2),'application/json','受付バックアップ-'+stamp()+'.json');$('backup-dialog').close();
+    return;
+  }
+  if(mode!=='restore'&&mode!=='migrate')throw new Error('操作を選び直してください。');
+  const candidate=mode==='restore'?restore?.candidate:expected;
+  if(!candidate)throw new Error('バックアップを選び直してください。');
+  const opened=await unseal(candidate,pass);
+  if(!accept())return;
+  if(mode==='restore'&&!confirm('この端末の名簿と受付記録を、バックアップの内容に置き換えますか？'))return;
+  if(!await replaceLocalState(opened.state,mode==='restore'?restore.expected:expected,accept))return;
+  $('backup-dialog').close();notify(mode==='migrate'?'記録を引き継ぎました。次回からパスフレーズなしで開きます。':'バックアップから復元しました。','success');
 });});
-$('lock').addEventListener('click',()=>lock());
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
 $('search').addEventListener('input',renderList);$('filter').addEventListener('change',renderList);
 $('manual-form').addEventListener('submit',e=>{e.preventDefault();showGroup($('manual-id').value);});
@@ -260,13 +279,13 @@ $('checkin-form').addEventListener('submit',e=>{e.preventDefault();const ids=new
   if(await commit(next)){$('group-dialog').close();notify(`${count}名の受付を保存しました。`,'success');}
 });});
 $('roster-file').addEventListener('change',e=>{const file=e.target.files[0];e.target.value='';if(!file)return;run(async()=>{
-  if(!state)throw new Error('先にロックを解除してください。');
+  if(!state)throw new Error('受付データを開き直してください。');
   if(!file.name.toLowerCase().endsWith('.json'))throw new Error('平文CSVは取り込みません。「受付名簿を暗号化して書き出す」で保存したJSONを選んでください。');
   if(file.size>20000000)throw new Error('暗号化名簿は20MB以下にしてください。');
   const generation=session;let candidate;
   try{candidate=JSON.parse(await file.text());}catch{throw new Error('暗号化名簿のJSONファイルを選んでください。');}
   validateEncryptedRoster(candidate);
-  if(generation!==session)throw new Error('ロックされました。解除して取り込み直してください。');
+  if(generation!==session)throw new Error('受付データが変わりました。取り込み直してください。');
   pendingRoster=candidate;$('import-passphrase').value='';$('import-error').textContent='';$('import-error').hidden=true;$('import-dialog').showModal();
 });});
 $('import-cancel').addEventListener('click',()=>$('import-dialog').close());
@@ -282,13 +301,13 @@ $('import-form').addEventListener('submit',e=>{e.preventDefault();run(async()=>{
   if(!confirm(`${incoming.length}名・${new Set(incoming.map(p=>p.groupId)).size}件を取り込みます。同じ人物IDの受付記録を引き継ぎます。よろしいですか？`))return;
   if(await commit(next)){$('import-dialog').close();notify(`${incoming.length}名の名簿を暗号化して保存しました。`,'success');}
 });});
-$('backup').addEventListener('click',()=>run(async()=>{if(!state)throw new Error('ロックを解除してください。');const latest=await readVault();await saveFile(JSON.stringify(latest,null,2),'application/json','受付バックアップ-'+stamp()+'.json');}));
+$('backup').addEventListener('click',()=>{if(state)openSecret('save');});
 $('restore').addEventListener('change',e=>{const file=e.target.files[0];e.target.value='';if(!file)return;run(async()=>{
   if(file.size>20000000)throw new Error('バックアップが大きすぎます。');
-  const candidate=validateVault(JSON.parse(await file.text()));pendingRestore=candidate;lock(false);gate();notify('バックアップを選びました。保存時のパスフレーズを入力してください。');
+  const candidate=validateVault(JSON.parse(await file.text()));pendingRestore={candidate,expected:await readVault()};openSecret('restore');
 });});
 $('export-csv').addEventListener('click',()=>run(async()=>{
-  if(!state)throw new Error('ロックを解除してください。');
+  if(!state)throw new Error('受付データを開き直してください。');
   if(!confirm('氏名・受付メモ・受付日時を含む、暗号化されていないCSVを保存します。保存先の管理に注意してください。続けますか？'))return;
   const jst=value=>value?new Date(value).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo',hour12:false}):'';
   const rows=[['受付ID','人物ID','氏名','区分','申込代表者','受付メモ','受付状態','受付日時（日本時間）','当日確認状態','当日確認メモ','当日確認日時（日本時間）'],...state.people.map(p=>{
@@ -298,28 +317,25 @@ $('export-csv').addEventListener('click',()=>run(async()=>{
   await saveFile(toCSV(rows),'text/csv;charset=utf-8','受付結果-'+stamp()+'.csv');
 }));
 $('erase').addEventListener('click',()=>run(async()=>{
-  if(!state)throw new Error('ロックを解除してください。');
+  if(!state)throw new Error('受付データを開き直してください。');
   if(prompt('端末内の名簿と全受付記録を削除します。必要なバックアップを保存してから「削除」と入力してください。')!=='削除')return;
-  await writeVault(null,vault.revision);vault=null;pendingRestore=null;lock(false);notify('この端末の名簿と記録を削除しました。');
+  await writeVault(null,vault);vault=null;pendingRestore=null;clearSession();await openLocalState();notify('この端末の名簿と記録を削除しました。');
 }));
 $('check-offline').addEventListener('click',checkOffline);
-for(const event of ['pointerdown','keydown','input'])document.addEventListener(event,()=>lastActivity=Date.now(),{passive:true});
-document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){hiddenAt=Date.now();stopCamera();}
-  else if(state&&hiddenAt&&Date.now()-hiddenAt>=30000)lock();
-});
-setInterval(()=>{if(state&&!busy&&(Date.now()-lastActivity>=180000 || (document.hidden&&hiddenAt&&Date.now()-hiddenAt>=30000)))lock();},1000);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera();});
+window.addEventListener('pagehide',stopCamera);
 function networkStatus(){$('network').textContent=navigator.onLine?'オンライン':'オフライン';}
 window.addEventListener('online',networkStatus);window.addEventListener('offline',networkStatus);networkStatus();
 
 async function init(){
   if(window.top!==window.self)throw new Error('このアプリは単独の画面で開いてください。');
   if(!window.isSecureContext || !crypto.subtle || !('serviceWorker' in navigator))throw new Error('HTTPSのURLをSafariで開いてください。HTMLファイルを直接開く方法ではカメラ・暗号化・オフライン起動を利用できません。');
-  db=await openDB();vault=await readVault();gate();
+  db=await openDB();await openLocalState();
+  if(navigator.storage?.persist)navigator.storage.persist().catch(()=>{});
   try{
     const existing=await navigator.serviceWorker.getRegistration('./');
     if(navigator.onLine||!existing?.active)await navigator.serviceWorker.register('./sw.js',{scope:'./'});
     await checkOffline();
   }catch{await checkOffline();}
 }
-init().catch(e=>{$('gate-title').textContent='起動条件を確認してください';$('gate-help').textContent=e.message;$('unlock').disabled=true;$('restore').disabled=true;report(e);});
+init().catch(e=>{$('gate-title').textContent='受付データを開けません';$('gate-help').textContent=e.message;report(e);});
