@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.1.1';
 export const EVENT_NAME = '第4回 笠戸島白浜海岸をきれいにしよう！';
 export const CSV_HEADERS = ['受付ID', '人物ID', '氏名', '区分', '申込代表者', '受付メモ'];
 export const MAX_PEOPLE = 10000;
