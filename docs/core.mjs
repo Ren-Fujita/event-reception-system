@@ -1,7 +1,20 @@
-export const APP_VERSION = '1.2.0';
-export const EVENT_NAME = '第4回 笠戸島白浜海岸をきれいにしよう！';
+export const APP_VERSION = '1.3.0';
+export const EVENT_NAME = '第4回 笠戸島白浜海岸をキレイにしよう！';
 export const CSV_HEADERS = ['受付ID', '人物ID', '氏名', '区分', '申込代表者', '受付メモ'];
+export const RECEIPT_HEADER = '受付番号';
 export const MAX_PEOPLE = 10000;
+
+function validateReceiptNumbers(people){
+  const byGroup=new Map(),byNumber=new Map();
+  for(const person of people){
+    const number=person.receiptNumber||'';
+    if(number&&(!/^[A-Z][A-Z0-9]{1,19}-\d{4,9}$/.test(number)||Number(number.split('-')[1])<1||String(Number(number.split('-')[1])).padStart(4,'0')!==number.split('-')[1]))throw new Error('受付番号の形式が正しくありません。');
+    if(byGroup.has(person.groupId)&&byGroup.get(person.groupId)!==number)throw new Error('同じ申込の受付番号が一致しません。');
+    if(number&&byNumber.has(number)&&byNumber.get(number)!==person.groupId)throw new Error('受付番号が別の申込と重複しています。');
+    byGroup.set(person.groupId,number);if(number)byNumber.set(number,person.groupId);
+  }
+  return people;
+}
 
 export function parseCSV(input) {
   const text = input.replace(/^\uFEFF/, '');
@@ -33,16 +46,17 @@ export function rosterFromCSV(text) {
   if (cols.some(i => i < 0) || new Set(headers).size !== headers.length)
     throw new Error('列が一致しません。付属スクリプトで作成した「受付名簿」シートをCSVで保存してください。');
   if (rows.length > MAX_PEOPLE) throw new Error('1万名を超える名簿には対応していません。');
-  const ids = new Set();
-  return rows.map((row, index) => {
+  const ids = new Set(),receiptColumn=headers.indexOf(RECEIPT_HEADER);
+  return validateReceiptNumbers(rows.map((row, index) => {
     if (row.length !== headers.length) throw new Error(`${index + 2}行目の列数が一致しません。`);
     const [groupId, id, name, role, representative, note] = cols.map(c => row[c].trim());
     if (!/^KSD4-[a-f0-9]{32}$/.test(groupId)) throw new Error(`${index + 2}行目の受付IDが正しくありません。`);
     if (!id.startsWith(groupId + '-') || id.length > 100 || ids.has(id)) throw new Error(`${index + 2}行目の人物IDが不正または重複しています。`);
     if (!name || name.length > 200 || !['子ども', '保護者'].includes(role) || note.length > 2000 || representative.length > 200)
       throw new Error(`${index + 2}行目の氏名・区分・メモを確認してください。`);
-    ids.add(id); return {groupId, id, name, role, representative, note, checkedAt: null};
-  });
+    const receiptNumber=receiptColumn<0?'':row[receiptColumn].trim();
+    ids.add(id); return {groupId, id, name, role, representative, note, checkedAt: null,...(receiptNumber?{receiptNumber}:{})};
+  }));
 }
 
 export function mergeRoster(current, incoming) {
@@ -50,20 +64,22 @@ export function mergeRoster(current, incoming) {
   const nextIds = new Set(incoming.map(p => p.id));
   const missing = current.filter(p => p.checkedAt && !nextIds.has(p.id));
   if (missing.length) throw new Error(`受付済みの${missing.length}名が新名簿に含まれません。別イベント・古いCSVでないか確認してください。`);
-  return incoming.map(p => {
+  return validateReceiptNumbers(incoming.map(p => {
     const prior = old.get(p.id);
     if (prior?.checkedAt && (prior.name !== p.name || prior.role !== p.role || prior.groupId !== p.groupId))
       throw new Error('受付済みの人物情報が変わっています。元の名簿を確認してください。');
-    return {...p, checkedAt: prior?.checkedAt || null};
-  });
+    if(prior?.receiptNumber&&p.receiptNumber&&prior.receiptNumber!==p.receiptNumber)throw new Error('同じ申込の受付番号が変更されています。元の名簿を確認してください。');
+    const receiptNumber=p.receiptNumber||prior?.receiptNumber;
+    return {...p, checkedAt: prior?.checkedAt || null,...(receiptNumber?{receiptNumber}:{})};
+  }));
 }
 
 export function validateState(data) {
   if (!data || data.version !== 1 || typeof data.eventName !== 'string' || data.eventName.length > 200 || !Array.isArray(data.people) || data.people.length > MAX_PEOPLE)
     throw new Error('バックアップ内の名簿形式が正しくありません。');
-  if(data.people.some(p => !p || !['groupId','id','name','role','representative','note'].every(k=>typeof p[k]==='string')))
+  if(data.people.some(p => !p || !['groupId','id','name','role','representative','note'].every(k=>typeof p[k]==='string') || (p.receiptNumber!==undefined&&typeof p.receiptNumber!=='string')))
     throw new Error('バックアップ内の人物情報が正しくありません。');
-  const csv = toCSV([CSV_HEADERS, ...data.people.map(p => [p.groupId,p.id,p.name,p.role,p.representative,p.note])], false);
+  const csv = toCSV([[...CSV_HEADERS,RECEIPT_HEADER], ...data.people.map(p => [p.groupId,p.id,p.name,p.role,p.representative,p.note,p.receiptNumber||''])], false);
   const valid = data.people.length ? rosterFromCSV(csv) : [];
   for (let i = 0; i < valid.length; i++) {
     const at = data.people[i].checkedAt;
@@ -101,11 +117,12 @@ export function toCSV(rows, safe = true) {
   }).join(',')).join('\r\n');
 }
 
-export function selectGroup(people, raw) {
+export function selectGroup(people, raw, allowReceiptNumber=false) {
   const id = raw.trim();
-  if (!/^KSD4-[a-f0-9]{32}$/.test(id)) throw new Error('この受付システム用のQRではありません。付属スクリプトで発行したQRを提示してもらってください。');
-  const group = people.filter(p => p.groupId === id);
-  if (!group.length) throw new Error('名簿にありません。最新のCSVを取り込んだか確認してください。');
+  const receipt=allowReceiptNumber&&/^[A-Z][A-Z0-9]{1,19}-\d{4,9}$/.test(id.toUpperCase());
+  if (!receipt&&!/^KSD4-[a-f0-9]{32}$/.test(id)) throw new Error('この受付システム用のQRではありません。受付番号は手入力欄へ入力してください。');
+  const group = people.filter(p => receipt?p.receiptNumber===id.toUpperCase():p.groupId===id);
+  if (!group.length) throw new Error('名簿にありません。最新の暗号化名簿を取り込んだか確認してください。');
   return group;
 }
 

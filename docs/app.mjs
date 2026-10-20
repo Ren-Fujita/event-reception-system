@@ -119,12 +119,12 @@ function switchTab(tab) {
 function renderList() {
   if (!state) return;
   const q=$('search').value.trim().toLocaleLowerCase('ja-JP'), filter=$('filter').value;
-  const found=state.people.filter(p=>(!q || [p.name,p.representative,p.groupId].some(s=>s.toLocaleLowerCase('ja-JP').includes(q))) && (filter==='all' || (filter==='review' ? needsReview(p.groupId)&&!state.reviews?.[p.groupId]?.confirmedAt : filter==='checked' ? !!p.checkedAt : !p.checkedAt)));
+  const found=state.people.filter(p=>(!q || [p.name,p.representative,p.groupId,p.receiptNumber||''].some(s=>s.toLocaleLowerCase('ja-JP').includes(q))) && (filter==='all' || (filter==='review' ? needsReview(p.groupId)&&!state.reviews?.[p.groupId]?.confirmedAt : filter==='checked' ? !!p.checkedAt : !p.checkedAt)));
   $('people-list').replaceChildren(); $('list-count').textContent=`${found.length}名`;
   for(const p of found.slice(0,100)) {
     const button=document.createElement('button'); button.className='person-row';button.type='button';
     const text=document.createElement('span'),name=document.createElement('span'),detail=document.createElement('span'),badge=document.createElement('span');
-    name.className='person-name';name.textContent=p.name; detail.className='person-detail';detail.textContent=p.role+' · 代表者 '+p.representative;
+    name.className='person-name';name.textContent=p.name; detail.className='person-detail';detail.textContent=p.role+' · '+(p.receiptNumber?p.receiptNumber+' · ':'')+'代表者 '+p.representative;
     text.append(name,detail);badge.className='badge'+(p.checkedAt?' done':'');badge.textContent=p.checkedAt?'受付済み':'未受付';
     if(needsReview(p.groupId)&&!state.reviews?.[p.groupId]?.confirmedAt){const warning=document.createElement('span');warning.className='review-badge';warning.textContent='当日確認';text.append(warning);}
     button.append(text,badge);
@@ -132,10 +132,10 @@ function renderList() {
   }
   $('list-limit').textContent=found.length>100 ? '最初の100名を表示しています。氏名で絞り込んでください。' : found.length===0 ? '該当する参加者はいません。' : '';
 }
-function showGroup(raw) {
+function showGroup(raw,allowReceiptNumber=false) {
   if (!state || busy) return;
   try {
-    const members=selectGroup(state.people,raw);currentGroupId=members[0].groupId;
+    const members=selectGroup(state.people,raw,allowReceiptNumber);currentGroupId=members[0].groupId;
     $('dialog-notice').textContent='';$('dialog-notice').hidden=true;
     $('group-title').textContent=members[0].representative+' さんの申込';renderGroup();
     if(!$('group-dialog').open) $('group-dialog').showModal();
@@ -144,7 +144,7 @@ function showGroup(raw) {
 function renderGroup() {
   const selectedIds=new Set(Array.from($('group-members').querySelectorAll('input:checked:not(:disabled)'),el=>el.value));
   const members=state.people.filter(p=>p.groupId===currentGroupId), count=members.filter(p=>p.checkedAt).length;
-  $('group-status').textContent=count===members.length ? `全${members.length}枠が受付済みです。二重受付は行いません。` : `${members.length}枠中 ${count}名が受付済み。来場した方を選んでください。`;
+  $('group-status').textContent=(members[0].receiptNumber?members[0].receiptNumber+' · ':'')+(count===members.length ? `全${members.length}枠が受付済みです。二重受付は行いません。` : `${members.length}枠中 ${count}名が受付済み。来場した方を選んでください。`);
   const warnings=[...new Set(members.map(p=>p.note.includes('【当日確認】')?p.note.split('撮影：')[0].trim():'').filter(Boolean))];
   $('group-warning').hidden=!warnings.length;$('group-warning').textContent=warnings.join('\n');
   $('review-section').hidden=!warnings.length;
@@ -261,7 +261,7 @@ $('backup-form').addEventListener('submit',e=>{e.preventDefault();run(async()=>{
 });});
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
 $('search').addEventListener('input',renderList);$('filter').addEventListener('change',renderList);
-$('manual-form').addEventListener('submit',e=>{e.preventDefault();showGroup($('manual-id').value);});
+$('manual-form').addEventListener('submit',e=>{e.preventDefault();showGroup($('manual-id').value,true);});
 $('start-camera').addEventListener('click',startCamera);$('stop-camera').addEventListener('click',stopCamera);
 $('close-group').addEventListener('click',()=>$('group-dialog').close());
 $('group-dialog').addEventListener('close',()=>{$('group-members').replaceChildren();$('review-note').value='';$('group-warning').textContent='';currentGroupId=null;});
@@ -310,9 +310,9 @@ $('export-csv').addEventListener('click',()=>run(async()=>{
   if(!state)throw new Error('受付データを開き直してください。');
   if(!confirm('氏名・受付メモ・受付日時を含む、暗号化されていないCSVを保存します。保存先の管理に注意してください。続けますか？'))return;
   const jst=value=>value?new Date(value).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo',hour12:false}):'';
-  const rows=[['受付ID','人物ID','氏名','区分','申込代表者','受付メモ','受付状態','受付日時（日本時間）','当日確認状態','当日確認メモ','当日確認日時（日本時間）'],...state.people.map(p=>{
+  const rows=[['受付ID','人物ID','氏名','区分','申込代表者','受付メモ','受付状態','受付日時（日本時間）','当日確認状態','当日確認メモ','当日確認日時（日本時間）','受付番号'],...state.people.map(p=>{
     const review=state.reviews?.[p.groupId];
-    return [p.groupId,p.id,p.name,p.role,p.representative,p.note,p.checkedAt?'受付済み':'未受付',jst(p.checkedAt),needsReview(p.groupId)?(review?.confirmedAt?'確認済み':'未確認'):'対象外',review?.note||'',jst(review?.confirmedAt)];
+    return [p.groupId,p.id,p.name,p.role,p.representative,p.note,p.checkedAt?'受付済み':'未受付',jst(p.checkedAt),needsReview(p.groupId)?(review?.confirmedAt?'確認済み':'未確認'):'対象外',review?.note||'',jst(review?.confirmedAt),p.receiptNumber||''];
   })];
   await saveFile(toCSV(rows),'text/csv;charset=utf-8','受付結果-'+stamp()+'.csv');
 }));
