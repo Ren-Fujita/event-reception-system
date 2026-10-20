@@ -36,7 +36,7 @@
     <p class="fine center">初回のみオンラインで準備。ホーム画面へ追加してから<br>そのアイコンで開き、名簿を取り込んでください。</p>
   </section>
   <main id="workspace" hidden>
-    <section class="event-head"><p class="eyebrow">STAFF RECEPTION</p><h1 id="event-name">イベント受付</h1><p class="muted">ようこそ、白浜海岸へ。</p></section>
+    <section class="event-head"><h1 id="event-name">イベント受付</h1></section>
     <div class="stats" aria-label="受付状況"><div><span>受付済み</span><strong id="checked-count">0<small>名</small></strong></div><div><span>未受付の枠</span><strong id="remaining-count">0<small>枠</small></strong></div><div><span>申込件数</span><strong id="group-count">0<small>件</small></strong></div></div><p id="provisional-note" class="fine" hidden>人数と氏名に食い違いがある申込は、氏名不明の仮枠を含みます。実際に来場した方だけ選んで受付してください。</p>
     <section id="tab-scan" class="tab-panel">
       <div class="section-heading"><h2>QRで受付</h2></div>
@@ -56,7 +56,7 @@
       <div class="card"><h3>セキュリティと運用</h3><ul class="guide-list"><li>名簿・受付日時はAES-256-GCMで暗号化して端末内に保存。</li><li>3分操作がない場合、または30秒以上バックグラウンドにした場合にロック。</li><li>受付確定は保存完了後に表示。二重受付を検出します。</li><li>iPhoneのパスコード・Face IDも有効にしてください。</li><li>QRの転送やスクリーンショットは防げません。表示された氏名を本人と確認してください。</li><li>サイトデータの削除・アプリ削除・端末故障に備え、暗号化バックアップを保管してください。</li></ul><button id="erase" class="danger wide">この端末の名簿と記録を削除</button></div>
     </section>
   </main>
-  <footer class="footnote">v1.1.1</footer>
+  <footer class="footnote">v1.1.2</footer>
 </div>
 <nav id="navigation" class="bottom-nav" aria-label="メニュー" hidden><button class="active" data-tab="scan" aria-current="page"><span aria-hidden="true">⌗</span>受付</button><button data-tab="list"><span aria-hidden="true">☷</span>名簿</button><button data-tab="data"><span aria-hidden="true">▣</span>準備・保存</button></nav>
 <dialog id="group-dialog"><div class="dialog-head"><div><p class="eyebrow">ARRIVAL CONFIRMATION</p><h2 id="group-title">来場した方を選択</h2></div><button id="close-group" class="small" aria-label="閉じる">閉じる</button></div><p id="group-status" class="muted"></p><div id="dialog-notice" class="notice" role="status" aria-live="polite" hidden></div><div id="group-warning" class="notice error" hidden></div><form id="checkin-form"><div id="group-members"></div><button id="checkin-submit" type="submit" class="primary wide">選択した方を受付</button></form><p class="fine">全員が揃っていなくても、来場した方だけ受付できます。</p><section id="review-section" class="review-section" hidden><h3>当日確認の記録</h3><label for="review-note">実際の人数・氏名などの確認メモ（任意）</label><textarea id="review-note" rows="3" maxlength="2000" placeholder="例：追加は2名。氏名不明の枠は来場なし。"></textarea><p id="review-status" class="fine"></p><button id="save-review" class="secondary wide" type="button">確認済みにしてメモを保存</button><p class="fine">受付の確定とは別の操作です。メモはこの端末内に保存し、受付結果CSVにも出力します。</p></section></dialog>
