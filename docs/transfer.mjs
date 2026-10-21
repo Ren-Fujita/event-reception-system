@@ -18,7 +18,7 @@ async function transferKey(passphrase,salt){
   return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:600000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
 }
 export async function encryptRosterCSV(csv,passphrase){
-  if(typeof passphrase!=='string'||passphrase.length<12||passphrase.length>200)throw new Error('受け渡し用パスフレーズは12〜200文字にしてください。');
+  if(typeof passphrase!=='string'||passphrase.length<10||passphrase.length>200)throw new Error('受け渡し用パスフレーズは10〜200文字にしてください。');
   if(typeof csv!=='string')throw new Error('名簿データの形式が正しくありません。');
   const bytes=new TextEncoder().encode(csv);
   if(!bytes.length||bytes.length>MAX_CSV_BYTES)throw new Error('名簿は10MB以下にしてください。');

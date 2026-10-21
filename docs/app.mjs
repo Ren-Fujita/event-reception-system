@@ -242,10 +242,10 @@ async function checkOffline() {
 function openSecret(mode){
   secretRequest++;secretMode=mode;const saving=mode==='save',migrating=mode==='migrate';
   $('backup-title').textContent=saving?'バックアップを暗号化する':migrating?'以前の記録を引き継ぐ':'バックアップを復元する';
-  $('backup-help').textContent=saving?'バックアップのファイルを保護するパスフレーズを設定してください。アプリ起動時の入力は不要です。':migrating?'保管した旧版の記録を復号するため、以前のパスフレーズを入力してください。サイトを開くための入力ではありません。':'このバックアップを保存したときのパスフレーズを入力してください。';
+  $('backup-help').textContent=saving?'バックアップのファイルを保護するパスフレーズを10文字以上で設定してください。アプリ起動時の入力は不要です。':migrating?'保管した旧版の記録を復号するため、以前のパスフレーズを入力してください。サイトを開くための入力ではありません。':'このバックアップを保存したときのパスフレーズを入力してください。';
   $('backup-confirm-wrap').hidden=!saving;$('backup-confirm').required=saving;
   $('backup-passphrase').autocomplete=saving?'new-password':'off';
-  document.querySelector('label[for="backup-passphrase"]').textContent=migrating?'以前のアプリ用パスフレーズ':'バックアップ用パスフレーズ';
+  document.querySelector('label[for="backup-passphrase"]').textContent=saving?'バックアップ用パスフレーズ（10文字以上）':migrating?'以前のアプリ用パスフレーズ':'バックアップ用パスフレーズ';
   $('backup-submit').textContent=saving?'暗号化して保存':migrating?'引き継いで開く':'復元する';
   $('backup-passphrase').value='';$('backup-confirm').value='';$('backup-error').hidden=true;$('backup-dialog').showModal();
 }
@@ -260,7 +260,7 @@ $('backup-form').addEventListener('submit',e=>{e.preventDefault();run(async()=>{
   $('backup-passphrase').value='';$('backup-confirm').value='';
   if(mode==='save'){
     if(!state)throw new Error('受付データを開き直してください。');
-    if(pass.length<12)throw new Error('バックアップ用パスフレーズは12文字以上にしてください。');
+    if(pass.length<10)throw new Error('バックアップ用パスフレーズは10文字以上にしてください。');
     if(pass!==confirmation)throw new Error('2回のパスフレーズが一致しません。');
     if(!matchesVault(await readVault(),expected))throw new Error('別の画面で更新されました。再読み込みしてから保存してください。');
     const salt=crypto.getRandomValues(new Uint8Array(16)),key=await deriveKey(pass,salt),backup=await seal(state,key,salt,1);
