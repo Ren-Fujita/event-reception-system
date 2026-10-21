@@ -1,4 +1,4 @@
-import {EVENT_NAME, rosterFromCSV, mergeRoster, retainReviews, selectGroup, deriveKey, seal, unseal, validateVault, toCSV} from './core.mjs';
+import {EVENT_NAME, rosterFromCSV, mergeRoster, retainReviews, selectGroup, deriveKey, seal, unseal, validateVault, mergeLegacyState, toCSV} from './core.mjs';
 import {validateEncryptedRoster,decryptRosterCSV} from './transfer.mjs';
 import {DEVICE_FORMAT,createDeviceKey,sealDeviceState,openDeviceState} from './device.mjs';
 
@@ -6,6 +6,7 @@ const $ = id => document.getElementById(id);
 let db, vault = null, state = null, deviceKey = null, busy = false, session = 0, secretMode = null, secretRequest = 0;
 let currentGroupId = null, pendingRestore = null, pendingRoster = null, stream = null, scanFrame = null, scanning = false;
 let flaggedGroups = new Set();
+let legacyRecords = [], pendingLegacy = null;
 const blankState = () => ({version:1,eventName:EVENT_NAME,people:[],importedAt:null,reviews:{}});
 const needsReview = groupId => flaggedGroups.has(groupId);
 const clock = s => new Date(s).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -33,7 +34,8 @@ function readVault() {
 }
 function matchesVault(current,expected){return expected ? !!current&&current.revision===expected.revision&&current.format===expected.format&&current.ciphertext===expected.ciphertext : !current;}
 function readDeviceKey(){return new Promise((resolve,reject)=>{const request=db.transaction('vault','readonly').objectStore('vault').get('device-key');request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});}
-function writeVault(next, expected, replacementKey, accept=()=>true) {
+function readLegacyRecords(){return new Promise((resolve,reject)=>{const request=db.transaction('vault','readonly').objectStore('vault').get('legacy-vaults');request.onsuccess=()=>{if(request.result&&!Array.isArray(request.result)){reject(new Error('旧版の保管記録を確認できません。'));return;}resolve(request.result||[]);};request.onerror=()=>reject(request.error);});}
+function writeVault(next, expected, replacementKey, accept=()=>true, archiveLegacy=false) {
   return new Promise((resolve,reject) => {
     const tx = db.transaction('vault','readwrite'), store = tx.objectStore('vault');
     let conflict = false, cancelled = false;
@@ -41,10 +43,18 @@ function writeVault(next, expected, replacementKey, accept=()=>true) {
     request.onsuccess = () => {
       if(!accept()){cancelled=true;tx.abort();return;}
       if (!matchesVault(request.result,expected)) { conflict = true; tx.abort(); return; }
-      try{
+      const save=()=>{try{
+        if(!accept()){cancelled=true;tx.abort();return;}
         if(next){store.put(next,'current');if(replacementKey)store.put(replacementKey,'device-key');}
-        else{store.delete('current');store.delete('device-key');}
-      }catch{tx.abort();}
+        else{store.delete('current');store.delete('device-key');store.delete('legacy-vaults');}
+      }catch{tx.abort();}};
+      if(archiveLegacy){
+        const archive=store.get('legacy-vaults');archive.onsuccess=()=>{try{
+          const records=archive.result||[];if(!Array.isArray(records)){tx.abort();return;}
+          if(!records.some(record=>record.vault?.ciphertext===expected.ciphertext&&record.vault?.iv===expected.iv))records.push({id:replacementKey.id,savedAt:new Date().toISOString(),vault:expected});
+          store.put(records,'legacy-vaults');save();
+        }catch{tx.abort();}};
+      }else save();
     };
     tx.oncomplete = resolve;
     tx.onabort = tx.onerror = () => reject(new Error(cancelled ? '操作を取り消しました。記録は変更していません。' : conflict ? '別の画面で名簿が更新されました。この画面を再読み込みしてください。' : '保存できませんでした。受付は確定していません。端末の空き容量を確認してください。'));
@@ -79,19 +89,22 @@ function showWorkspace() {
   $('gate').hidden=true; $('workspace').hidden=false; $('navigation').hidden=false;
   $('notice').hidden=true;render();
 }
-async function replaceLocalState(next,expected,accept=()=>true){
+async function replaceLocalState(next,expected,accept=()=>true,archiveLegacy=false){
   const revision=Number.isSafeInteger(expected?.revision)&&expected.revision>0&&expected.revision<Number.MAX_SAFE_INTEGER?expected.revision+1:1;
   const replacementKey=await createDeviceKey(),replacement=await sealDeviceState(next,replacementKey,revision);
   if(!accept())return false;
-  await writeVault(replacement,expected,replacementKey,accept);
+  await writeVault(replacement,expected,replacementKey,accept,archiveLegacy);
+  legacyRecords=await readLegacyRecords();
   clearSession();vault=replacement;deviceKey=replacementKey;state=next;showWorkspace();return true;
 }
 async function openLocalState(){
+  legacyRecords=await readLegacyRecords();
   const stored=await readVault();
   if(!stored){await replaceLocalState(blankState(),null);return;}
   vault=stored;
   if(stored.format!==DEVICE_FORMAT){
-    validateVault(stored);$('gate-title').textContent='以前の記録を引き継ぐ';$('gate-help').textContent='旧版の記録が残っています。以前のアプリ用パスフレーズを一度だけ入力すると、次回から入力なしで開けます。';$('migrate').hidden=false;return;
+    validateVault(stored);await replaceLocalState(blankState(),stored,()=>true,true);
+    notify('旧版の暗号化記録を保管しました。引き継ぐ場合は「準備・保存」から選べます。サイトを開くためのパスワードは不要です。');return;
   }
   const record=await readDeviceKey(),opened=await openDeviceState(stored,record);
   deviceKey=record;state=opened;showWorkspace();
@@ -107,6 +120,10 @@ function render() {
   $('no-roster').hidden=state.people.length>0;$('start-camera').disabled=state.people.length===0;
   $('provisional-note').hidden=!state.people.some(p=>p.note.includes('【当日確認】'));
   $('import-info').textContent=state.importedAt ? `${state.people.length}名 / 最終取り込み ${clock(state.importedAt)}` : 'まだ取り込まれていません。';
+  $('legacy-card').hidden=!legacyRecords.length;
+  const selected=$('legacy-record').value;$('legacy-record').replaceChildren();
+  legacyRecords.forEach((record,i)=>{const option=document.createElement('option');option.value=record.id;option.textContent=`旧版の記録${i+1}（保管 ${clock(record.savedAt)}）`;$('legacy-record').append(option);});
+  if(legacyRecords.some(record=>record.id===selected))$('legacy-record').value=selected;
   renderList();
 }
 function switchTab(tab) {
@@ -225,7 +242,7 @@ async function checkOffline() {
 function openSecret(mode){
   secretRequest++;secretMode=mode;const saving=mode==='save',migrating=mode==='migrate';
   $('backup-title').textContent=saving?'バックアップを暗号化する':migrating?'以前の記録を引き継ぐ':'バックアップを復元する';
-  $('backup-help').textContent=saving?'バックアップのファイルを保護するパスフレーズを設定してください。アプリ起動時の入力は不要です。':migrating?'旧版で設定したアプリ用パスフレーズを一度だけ入力してください。':'このバックアップを保存したときのパスフレーズを入力してください。';
+  $('backup-help').textContent=saving?'バックアップのファイルを保護するパスフレーズを設定してください。アプリ起動時の入力は不要です。':migrating?'保管した旧版の記録を復号するため、以前のパスフレーズを入力してください。サイトを開くための入力ではありません。':'このバックアップを保存したときのパスフレーズを入力してください。';
   $('backup-confirm-wrap').hidden=!saving;$('backup-confirm').required=saving;
   $('backup-passphrase').autocomplete=saving?'new-password':'off';
   document.querySelector('label[for="backup-passphrase"]').textContent=migrating?'以前のアプリ用パスフレーズ':'バックアップ用パスフレーズ';
@@ -233,11 +250,12 @@ function openSecret(mode){
   $('backup-passphrase').value='';$('backup-confirm').value='';$('backup-error').hidden=true;$('backup-dialog').showModal();
 }
 $('backup-cancel').addEventListener('click',()=>$('backup-dialog').close());
-$('backup-dialog').addEventListener('close',()=>{secretRequest++;secretMode=null;pendingRestore=null;$('backup-passphrase').value='';$('backup-confirm').value='';$('backup-error').textContent='';});
-$('migrate').addEventListener('click',()=>openSecret('migrate'));
+$('backup-dialog').addEventListener('close',()=>{secretRequest++;secretMode=null;pendingRestore=null;pendingLegacy=null;$('backup-passphrase').value='';$('backup-confirm').value='';$('backup-error').textContent='';});
+$('migrate').addEventListener('click',()=>{if(busy)return;pendingLegacy=legacyRecords.find(record=>record.id===$('legacy-record').value)||null;if(pendingLegacy)openSecret('migrate');});
+$('legacy-export').addEventListener('click',()=>run(async()=>{const record=legacyRecords.find(record=>record.id===$('legacy-record').value);if(!record)throw new Error('保管した記録を選んでください。');await saveFile(JSON.stringify(validateVault(record.vault),null,2),'application/json','旧版受付記録-'+stamp()+'.json');}));
 $('reload').addEventListener('click',()=>location.reload());
 $('backup-form').addEventListener('submit',e=>{e.preventDefault();run(async()=>{
-  const mode=secretMode,request=secretRequest,pass=$('backup-passphrase').value,confirmation=$('backup-confirm').value,restore=pendingRestore,expected=vault;
+  const mode=secretMode,request=secretRequest,pass=$('backup-passphrase').value,confirmation=$('backup-confirm').value,restore=pendingRestore,legacy=pendingLegacy,expected=vault;
   const accept=()=>request===secretRequest&&$('backup-dialog').open;
   $('backup-passphrase').value='';$('backup-confirm').value='';
   if(mode==='save'){
@@ -251,13 +269,15 @@ $('backup-form').addEventListener('submit',e=>{e.preventDefault();run(async()=>{
     return;
   }
   if(mode!=='restore'&&mode!=='migrate')throw new Error('操作を選び直してください。');
-  const candidate=mode==='restore'?restore?.candidate:expected;
+  const candidate=mode==='restore'?restore?.candidate:legacy?.vault;
   if(!candidate)throw new Error('バックアップを選び直してください。');
   const opened=await unseal(candidate,pass);
   if(!accept())return;
   if(mode==='restore'&&!confirm('この端末の名簿と受付記録を、バックアップの内容に置き換えますか？'))return;
-  if(!await replaceLocalState(opened.state,mode==='restore'?restore.expected:expected,accept))return;
-  $('backup-dialog').close();notify(mode==='migrate'?'記録を引き継ぎました。次回からパスフレーズなしで開きます。':'バックアップから復元しました。','success');
+  if(mode==='migrate'&&!confirm('旧版で受付済みの記録を引き継ぎます。現在の名簿・受付済み記録も残します。よろしいですか？'))return;
+  const next=mode==='migrate'?mergeLegacyState(state,opened.state):opened.state;
+  if(!await replaceLocalState(next,mode==='restore'?restore.expected:expected,accept))return;
+  $('backup-dialog').close();notify(mode==='migrate'?'旧版の記録を引き継ぎました。サイトを開く際のパスワード入力は不要です。':'バックアップから復元しました。','success');
 });});
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
 $('search').addEventListener('input',renderList);$('filter').addEventListener('change',renderList);
@@ -318,7 +338,7 @@ $('export-csv').addEventListener('click',()=>run(async()=>{
 }));
 $('erase').addEventListener('click',()=>run(async()=>{
   if(!state)throw new Error('受付データを開き直してください。');
-  if(prompt('端末内の名簿と全受付記録を削除します。必要なバックアップを保存してから「削除」と入力してください。')!=='削除')return;
+  if(prompt('端末内の名簿と全受付記録（保管した旧版の記録も含む）を削除します。必要なバックアップを保存してから「削除」と入力してください。')!=='削除')return;
   await writeVault(null,vault);vault=null;pendingRestore=null;clearSession();await openLocalState();notify('この端末の名簿と記録を削除しました。');
 }));
 $('check-offline').addEventListener('click',checkOffline);

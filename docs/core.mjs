@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.3.1';
 export const EVENT_NAME = '第4回 笠戸島白浜海岸をキレイにしよう！';
 export const CSV_HEADERS = ['受付ID', '人物ID', '氏名', '区分', '申込代表者', '受付メモ'];
 export const RECEIPT_HEADER = '受付番号';
@@ -107,6 +107,25 @@ export function retainReviews(current,incoming,reviews={}) {
     if(next.length)result[id]={note:review.note,confirmedAt:source(current.filter(p=>p.groupId===id))===source(next)?review.confirmedAt:null};
   }
   return result;
+}
+
+export function mergeLegacyState(current,legacy){
+  current=validateState(current);legacy=validateState(legacy);
+  const numbers=new Map(),people=new Map(current.people.map(person=>[person.id,{...person}]));
+  for(const person of [...current.people,...legacy.people])if(person.receiptNumber){
+    if(numbers.has(person.groupId)&&numbers.get(person.groupId)!==person.receiptNumber)throw new Error('旧版と現在の受付番号が一致しません。現在の記録は変更していません。');
+    numbers.set(person.groupId,person.receiptNumber);
+  }
+  for(const person of legacy.people){
+    const existing=people.get(person.id);
+    if(existing){
+      if(['groupId','name','role'].some(field=>existing[field]!==person[field]))throw new Error('旧版と現在の人物情報が一致しません。現在の記録は変更していません。');
+      existing.checkedAt=existing.checkedAt||person.checkedAt;
+    }else people.set(person.id,{...person});
+  }
+  const merged=Array.from(people.values(),person=>({...person,...(numbers.has(person.groupId)?{receiptNumber:numbers.get(person.groupId)}:{})}));
+  const reviews={...retainReviews(legacy.people,merged,legacy.reviews),...retainReviews(current.people,merged,current.reviews)};
+  return validateState({...current,eventName:current.people.length?current.eventName:legacy.eventName,people:merged,reviews,importedAt:current.importedAt||legacy.importedAt});
 }
 
 export function toCSV(rows, safe = true) {

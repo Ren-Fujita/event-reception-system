@@ -1,5 +1,5 @@
 const PREFIX='kasado-shell:'+self.registration.scope+':';
-const CACHE=PREFIX+'v1.3.0';
+const CACHE=PREFIX+'v1.3.1';
 const FILES=['./','./index.html','./style.css','./app.mjs','./core.mjs','./device.mjs','./transfer.mjs','./vendor/jsQR.js','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
 // 更新版は既存の画面をすべて閉じてから有効化し、旧HTMLと新JSの混在を防ぎます。
 self.addEventListener('install',event=>event.waitUntil((async()=>{const cache=await caches.open(CACHE);await cache.addAll(FILES.map(file=>new Request(new URL(file,self.location.href),{cache:'reload'})));})()));
