@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#143f43">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="イベント受付システム">
+  <meta name="description" content="イベントのオフライン受付。名簿と受付記録は端末内で暗号化保存。">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+  <title>イベント受付システム</title>
+  <script defer src="./vendor/jsQR.js"></script>
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+<div class="shell">
+  <header class="topbar"><a class="brand" href="./" aria-label="イベント受付システム ホーム"><span class="brand-icon" aria-hidden="true">▦</span><span>イベント受付システム</span></a></header>
+  <div class="connection"><span id="network">接続を確認中</span><span id="offline-state" role="status">オフライン準備を確認中</span></div>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+  <section id="gate" class="gate">
+    <div class="card gate-card"><h2 id="gate-title">読み込み中</h2><p id="gate-help" class="muted">保存した受付データを開いています。起動用パスフレーズは不要です。</p>
+      <button id="reload" class="secondary wide">再読み込み</button>
+      <label class="file-button secondary" for="restore">暗号化バックアップから復元</label>
+    </div>
+    <p class="fine center">初回のみオンラインで準備。ホーム画面へ追加してから<br>そのアイコンで開き、名簿を取り込んでください。</p>
+  </section>
+  <main id="workspace" hidden>
+    <section class="event-head"><h1 id="event-name">イベント受付</h1></section>
+    <div class="stats" aria-label="受付状況"><div><span>受付済み</span><strong id="checked-count">0<small>名</small></strong></div><div><span>未受付の枠</span><strong id="remaining-count">0<small>枠</small></strong></div><div><span>申込件数</span><strong id="group-count">0<small>件</small></strong></div></div><p id="provisional-note" class="fine" hidden>人数と氏名に食い違いがある申込は、氏名不明の仮枠を含みます。実際に来場した方だけ選んで受付してください。</p>
+    <section id="tab-scan" class="tab-panel">
+      <div class="section-heading"><h2>QRで受付</h2></div>
+      <div id="no-roster" class="card"><h3>まず、名簿を取り込みましょう</h3><p>「準備・保存」から、スプレッドシートで書き出した暗号化名簿を選びます。</p><button class="primary" data-tab="data">名簿を取り込む</button></div>
+      <div class="camera-controls"><button id="start-camera" class="primary">カメラを起動</button><button id="stop-camera" class="secondary" hidden>カメラを停止</button></div>
+      <div class="camera" id="camera-box"><video id="video" playsinline muted autoplay aria-label="受付用カメラ"></video><div id="camera-idle"><span class="scan-symbol" aria-hidden="true">⌗</span><p>参加者のQRを枠に合わせてください</p><p class="fine">読み取り後、来場した方を選んで確定します</p></div><div class="scan-frame" aria-hidden="true"></div></div>
+      
+      <details class="card compact"><summary>QRが読み取れないとき</summary><p class="muted">名簿から名前で探すか、メールに記載の受付番号を入力できます。以前の受付IDも使えます。</p><form id="manual-form"><label for="manual-id">受付番号・受付ID</label><input id="manual-id" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="EV2701-0001" maxlength="100"><button type="submit" class="secondary wide">申込を表示</button></form><button class="text-button" data-tab="list">名前から探す →</button></details>
+      <p class="fine">読み取ったIDは開いたり送信したりせず、端末内の名簿とだけ照合します。</p>
+    </section>
+    <section id="tab-list" class="tab-panel" hidden><div class="section-heading"><h2>名簿を探す</h2><span id="list-count" class="muted"></span></div><label for="search">氏名・学年・代表者名・受付番号・受付ID</label><input id="search" type="search" placeholder="名前・学年・受付番号を入力" autocomplete="off"><label for="filter" class="sr-only">受付状態</label><select id="filter"><option value="all">すべて表示</option><option value="pending">未受付のみ</option><option value="checked">受付済みのみ</option><option value="review">当日確認が必要な申込</option></select><div id="people-list" class="people-list"></div><p id="list-limit" class="fine"></p></section>
+    <section id="tab-data" class="tab-panel" hidden>
+      <div class="section-heading"><h2>準備・保存</h2><span class="pill">受付前にチェック</span></div>
+      <div id="legacy-card" class="card" hidden><h3>旧版の記録を引き継ぐ（任意）</h3><p class="muted">旧版の暗号化記録をそのまま保管しています。サイトを開くためのパスワードは不要です。以前の受付済み記録が必要な場合だけ、下の操作で引き継げます。</p><label for="legacy-record">保管した記録</label><select id="legacy-record"></select><button id="migrate" class="secondary wide">旧版の記録を引き継ぐ</button><button id="legacy-export" class="secondary wide">旧版の暗号化ファイルを保存</button><p class="fine">引き継ぎには旧版で設定したパスフレーズが必要です。通常のバックアップには現在の受付データを保存します。保管分は上のボタンから別に保存できます。</p></div>
+      <div class="card"><h3>1. 暗号化した受付名簿を取り込む</h3><p class="muted">PCのスプレッドシートで「イベント受付 → 受付名簿を暗号化して書き出す」を選び、保存したJSONだけをiPhoneへ渡してください。電話番号・住所・メールは含みません。</p><label class="file-button primary" for="roster-file">暗号化名簿を選ぶ</label><input id="roster-file" type="file" accept=".json,application/json" hidden><p id="import-info" class="fine">まだ取り込まれていません。</p><p class="fine">書き出し時の受け渡し用パスフレーズを入力します。再取り込み時も、同じ人物IDの受付記録を引き継ぎます。平文CSVは取り込みません。</p></div>
+      <div class="card"><h3>2. オフラインで起動を確認</h3><p class="muted">Safariの共有メニューから「ホーム画面に追加」。そのアイコンで開いて名簿を取り込み、機内モードでアプリを開き直してください。</p><button id="check-offline" class="secondary wide">必要ファイルの保存を確認</button><p id="cache-detail" class="fine"></p><p class="fine">「準備完了」はファイル保存の確認です。実際のiPhoneでQR読取・受付・再起動まで確認してから本番で使ってください。</p></div>
+      <div class="card"><h3>3. 記録のバックアップ</h3><p class="muted">名簿・受付日時・当日確認メモをまとめて保存します。バックアップ用パスフレーズを設定し、その言葉で復元します。アプリ起動時の入力は不要です。</p><button id="backup" class="primary wide">暗号化バックアップを保存</button><label class="file-button secondary" for="restore">暗号化バックアップから復元</label><button id="export-csv" class="secondary wide">受付結果をCSVで保存（暗号化なし）</button><p class="fine">受付記録はGoogleへ自動同期されません。終了後にバックアップを保存してください。</p></div>
+      <div class="card"><h3>セキュリティと運用</h3><ul class="guide-list"><li>起動用パスフレーズ・自動ロックはありません。iPhoneのパスコード・Face IDで端末を保護してください。</li><li>名簿・受付日時は端末に保存した暗号鍵で暗号化し、自動で開きます。</li><li>受付確定は保存完了後に表示。二重受付を検出します。</li><li>QRの転送やスクリーンショットは防げません。表示された氏名を本人と確認してください。</li><li>サイトデータの削除・アプリ削除・端末故障に備え、暗号化バックアップを保管してください。</li></ul><button id="erase" class="danger wide">この端末の名簿と記録を削除</button></div>
+    </section>
+  </main>
+  <footer class="footnote">v1.4.0</footer>
+</div>
+<nav id="navigation" class="bottom-nav" aria-label="メニュー" hidden><button class="active" data-tab="scan" aria-current="page"><span aria-hidden="true">⌗</span>受付</button><button data-tab="list"><span aria-hidden="true">☷</span>名簿</button><button data-tab="data"><span aria-hidden="true">▣</span>準備・保存</button></nav>
+<dialog id="group-dialog"><div class="dialog-head"><div><p class="eyebrow">ARRIVAL CONFIRMATION</p><h2 id="group-title">来場した方を選択</h2></div><button id="close-group" class="small" aria-label="閉じる">閉じる</button></div><p id="group-status" class="muted"></p><div id="dialog-notice" class="notice" role="status" aria-live="polite" hidden></div><div id="group-warning" class="notice error" hidden></div><form id="checkin-form"><div id="group-members"></div><button id="checkin-submit" type="submit" class="primary wide">選択した方を受付</button></form><p class="fine">全員が揃っていなくても、来場した方だけ受付できます。</p><section id="review-section" class="review-section" hidden><h3>当日確認の記録</h3><label for="review-note">実際の人数・氏名などの確認メモ（任意）</label><textarea id="review-note" rows="3" maxlength="2000" placeholder="例：追加は2名。氏名不明の枠は来場なし。"></textarea><p id="review-status" class="fine"></p><button id="save-review" class="secondary wide" type="button">確認済みにしてメモを保存</button><p class="fine">受付の確定とは別の操作です。メモはこの端末内に保存し、受付結果CSVにも出力します。</p></section></dialog>
+<dialog id="import-dialog"><div class="dialog-head"><h2>暗号化名簿を開く</h2><button id="import-cancel" class="small" type="button">取り消す</button></div><p class="muted">PCで書き出すときに設定した、受け渡し用パスフレーズを入力してください。取り込み後のアプリ起動時には入力しません。</p><div id="import-error" class="notice error" role="status" aria-live="polite" hidden></div><form id="import-form"><label for="import-passphrase">受け渡し用パスフレーズ</label><input id="import-passphrase" type="password" maxlength="200" autocomplete="off" required><button id="import-submit" type="submit" class="primary wide">復号して取り込む</button></form><p class="fine">復号と名簿の検証が完了するまで、現在の名簿・受付記録を変更しません。受け渡し用パスフレーズは保存しません。</p></dialog>
+<dialog id="backup-dialog"><div class="dialog-head"><h2 id="backup-title">暗号化バックアップ</h2><button id="backup-cancel" class="small" type="button">取り消す</button></div><p id="backup-help" class="muted"></p><div id="backup-error" class="notice error" role="status" aria-live="polite" hidden></div><form id="backup-form"><label for="backup-passphrase">ファイル用パスフレーズ</label><input id="backup-passphrase" type="password" maxlength="200" required autocomplete="off"><div id="backup-confirm-wrap" hidden><label for="backup-confirm">もう一度入力</label><input id="backup-confirm" type="password" maxlength="200" autocomplete="new-password"></div><button id="backup-submit" class="primary wide" type="submit">続ける</button></form><p class="fine">パスフレーズは保存しません。バックアップを復元する際に必要です。</p></dialog>
+<input id="restore" type="file" accept=".json,application/json" hidden>
+<noscript>この受付アプリを使用するにはJavaScriptを有効にしてください。</noscript>
+</body></html>
