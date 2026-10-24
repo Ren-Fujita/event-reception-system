@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/33905307/README.md)
 # イベント受付システム v1.4.0
 
 Google Form → QRメール自動送信 → 暗号化名簿 → iPhone 1台でオフライン受付、までをつなぐ一式です。事前準備・書き出しにはPCを使い、当日はiPhone 1台で完結します。こちらから公開・フォームへの回答・実メール送信は行っていません。
